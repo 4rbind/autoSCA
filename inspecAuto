@@ -1,0 +1,67 @@
+#!/bin/bash
+
+# Jhilimili bling bling
+RED="\e[31m"
+GREEN="\e[32m"
+CYAN="\e[36m"
+YELLOW="\e[33m"
+ENDCOLOR="\e[0m"
+
+# Define the JSON input file
+JSON_FILE="machines.json"
+
+# Ensure required directories exist
+mkdir -p /var/autoSCA/json
+mkdir -p /var/autoSCA/csv
+mkdir -p /var/autoSCA/log
+
+# Loop through each machine in the JSON file
+cat $JSON_FILE | jq -c '.[]' | while read machine; do
+    # Extract details from JSON
+    host=$(echo $machine | jq -r '.host')
+    username=$(echo $machine | jq -r '.username')
+    password=$(echo $machine | jq -r '.password')
+    os_type=$(echo $machine | jq -r '.os')
+    control_directory=$(echo $machine | jq -r '.control_directory')
+
+    echo -e "${YELLOW} -----------------------------"
+    echo "| For machine $host |"
+    echo -e " -----------------------------${ENDCOLOR}"
+    # Define the output file path and log file path
+    output_file="/var/autoSCA/json/${host}_output.json"
+    csv_file="/var/autoSCA/csv/${host}_output.csv"
+    log_file="/var/autoSCA/log/${host}_warnings.log"
+
+    # Run InSpec command
+    if [[ "$os_type" == "linux" || "$os_type" == "macos" ]]; then
+        echo -e "${CYAN}Running config assessment on Linux/Mac host:${ENDCOLOR} $host"
+        inspec exec $control_directory --host ssh://$username@$host --password "$password" --reporter json --no-color > $output_file 2>>$log_file
+    elif [[ "$os_type" == "windows" ]]; then
+        echo -e "${CYAN}Running config assesment on Windows host:${ENDCOLOR} $host"
+        inspec exec $control_directory --host winrm://$username:$password@$host --reporter json --no-color > $output_file 2>>$log_file
+    else
+        echo -e "${RED}Unsupported OS: $os_type for host:${ENDCOLOR} $host"
+        continue
+    fi
+
+    # Clean JSON (remove non-JSON data)
+    sed -i '1{/^{/!d}' $output_file  # Remove any leading non-JSON data
+    sed -i '/}$/!d' $output_file    # Keep only valid JSON at the end
+
+    # Convert JSON to CSV using Python script, passing the JSON and CSV file paths as arguments
+    python3 conversion.py $output_file $csv_file
+
+    # Check if the InSpec command generated an output JSON file
+    if [[ -f "$output_file" && -s "$output_file" ]]; then
+        echo -e "${GREEN}Results saved to:${ENDCOLOR}     $output_file"
+    else
+        echo -e "${RED}Failed to generate InSpec results for${ENDCOLOR} $host"
+    fi
+
+    # Check if there were any warnings captured in the log file
+    if [[ -s $log_file ]]; then
+        echo -e "${RED}Warnings captured in:${ENDCOLOR} $log_file"
+    fi
+
+done
+
