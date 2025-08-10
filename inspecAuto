@@ -11,12 +11,18 @@ ENDCOLOR="\e[0m"
 JSON_FILE="machines.json"
 
 # Ensure required directories exist
-mkdir -p /var/autoSCA/json
-mkdir -p /var/autoSCA/csv
-mkdir -p /var/autoSCA/log
+mkdir -p /var/autoSCA/json /var/autoSCA/csv /var/autoSCA/log
+
+
+# Check jq installed
+if ! command -v jq &>/dev/null; then
+  echo -e "${RED}Please install jq (sudo apt install jq)${ENDCOLOR}"
+  exit 1
+fi
+
 
 # Loop through each machine in the JSON file
-cat $JSON_FILE | jq -c '.[]' | while read machine; do
+jq -c '.[]' "$JSON_FILE" | while read -r machine; do
     # Extract details from JSON
     host=$(echo $machine | jq -r '.host')
     username=$(echo $machine | jq -r '.username')
@@ -24,9 +30,58 @@ cat $JSON_FILE | jq -c '.[]' | while read machine; do
     os_type=$(echo $machine | jq -r '.os')
     control_directory=$(echo $machine | jq -r '.control_directory')
 
+        # Ping check
+    if ping -c 1 -W 2 "$host" &>/dev/null; then
+      ping_status="PING_OK"
+    else
+      ping_status="PING_FAIL"
+    fi
+
+    connection_status="CONN_FAIL"
+    port=""
+
+    # SSH check (always try regardless of ping)
+    timeout 3 bash -c "echo > /dev/tcp/$host/22" &>/dev/null
+    if [[ $? -eq 0 ]]; then
+      connection_status="SSH_OK"
+      port="22"
+    else
+      # Check WinRM if SSH fails
+      timeout 3 bash -c "echo > /dev/tcp/$host/5985" &>/dev/null
+      if [[ $? -eq 0 ]]; then
+        connection_status="WINRM_OK"
+        port="5985"
+      fi
+    fi
+
+    # Skip only if both SSH and WinRM fail
+    if [[ "$connection_status" == "CONN_FAIL" ]]; then
+      echo -e "${RED}$host | $ping_status | $connection_status | Connection failed on both SSH and WinRM. Skipping.${ENDCOLOR}"
+      continue
+    fi
+
+    # Run OS detection python script
+    os_info=$(python3 detect_os.py "$host" "$username" "$password" "$port" 2>/dev/null)
+    if [[ -z "$os_info" ]]; then
+      os_info="UNKNOWN"
+    fi
+
     echo -e "${YELLOW} -----------------------------"
     echo "| For machine $host |"
     echo -e " -----------------------------${ENDCOLOR}"
+    echo -e "${GREEN}Detected OS:${ENDCOLOR} $os_info"
+
+    # Determine os_type for inspec usage based on os_info
+    os_type=""
+    os_info_lower=$(echo "$os_info" | tr '[:upper:]' '[:lower:]')
+    if [[ "$os_info_lower" == *"windows"* ]]; then
+      os_type="windows"
+    elif [[ "$os_info_lower" == *"ubuntu"* || "$os_info_lower" == *"centos"* || "$os_info_lower" == *"red hat"* || "$os_info_lower" == *"macos"* ]]; then
+      os_type="linux"
+    else
+      os_type="unknown"
+    fi
+    
     # Define the output file path and log file path
     output_file="/var/autoSCA/json/${host}_output.json"
     csv_file="/var/autoSCA/csv/${host}_output.csv"
