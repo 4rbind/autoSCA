@@ -64,37 +64,59 @@ def detect_os(host, username, password, port):
             print("error", file=sys.stderr)
             sys.exit(1)
 
-    elif port == "5985":  # WinRM (Windows)
-        try:
-            session = winrm.Session(f'http://{host}:5985/wsman', auth=(username, password))
-            result = session.run_cmd('systeminfo')
+    elif port in ["5985", "5986"]:  # WinRM (Windows)
+        winrm_attempts = [
+            {
+                "protocol": "http",
+                "url": f"http://{host}:{port}/wsman",
+                "transport": "ntlm",
+                "server_cert_validation": None
+            },
+            {
+                "protocol": "https",
+                "url": f"https://{host}:5986/wsman",  # Force port 5986 for HTTPS
+                "transport": "basic",
+                "server_cert_validation": "ignore"
+            }
+        ]
 
-            output = result.std_out.decode().lower()
+        for attempt in winrm_attempts:
+            try:
+                session = winrm.Session(
+                    attempt["url"],
+                    auth=(username, password),
+                    transport=attempt["transport"],
+                    server_cert_validation=attempt["server_cert_validation"]
+                )
 
-            if "os name" in output and "os version" in output:
-                lines = output.splitlines()
-                os_name = ""
-                os_version = ""
+                result = session.run_cmd('systeminfo')
+                output = result.std_out.decode().strip().lower()
 
-                for line in lines:
-                    if "os name" in line:
+                if result.status_code != 0 or not output:
+                    raise Exception("Empty result")
+
+                os_name = "windows"
+                os_version = "unknown"
+
+                for line in output.splitlines():
+                    if line.startswith("os name"):
                         os_name = line.split(":", 1)[1].strip()
-                    elif "os version" in line:
+                    elif line.startswith("os version"):
                         os_version = line.split(":", 1)[1].strip()
                         break
 
                 print(f"{os_name} {os_version}")
                 return
-            else:
-                print("windows (unknown version)")
-                return
 
-        except Exception as e:
-            print("error", file=sys.stderr)
-            sys.exit(1)
+            except Exception:
+                continue  # Try next protocol
+
+        # If both attempts fail:
+        print("error: failed to connect via HTTP and HTTPS", file=sys.stderr)
+        sys.exit(1)
 
     else:
-        print("unsupported", file=sys.stderr)
+        print("unsupported port", file=sys.stderr)
         sys.exit(1)
 
 
