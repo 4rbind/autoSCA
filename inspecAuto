@@ -1,5 +1,7 @@
 #!/bin/bash
 
+LOG_FILE="/var/autoSCA/log/autoSCA.log"
+
 # Jhilimili bling bling
 RED="\e[31m"
 GREEN="\e[32m"
@@ -7,19 +9,40 @@ CYAN="\e[36m"
 YELLOW="\e[33m"
 ENDCOLOR="\e[0m"
 
+# Logging Functions
+log() {
+    local level=$1
+    local message=$2
+    local timestamp=$(date +"%Y-%m-%d %H:%M:%S")
+    
+    # Terminal output (colored)
+    case $level in
+        "INFO")    echo -e "${CYAN}[$timestamp] INFO: $message${ENDCOLOR}" ;;
+        "SUCCESS") echo -e "${GREEN}[$timestamp] SUCCESS: $message${ENDCOLOR}" ;;
+        "WARNING") echo -e "${YELLOW}[$timestamp] WARNING: $message${ENDCOLOR}" ;;
+        "ERROR")   echo -e "${RED}[$timestamp] ERROR: $message${ENDCOLOR}" ;;
+        *)         echo -e "[$timestamp] $message" ;;
+    esac
+    
+    # File output (no color codes)
+    echo "[$timestamp] $level: $message" >> "$LOG_FILE"
+}
+
 # Define the JSON input file
 JSON_FILE="machines.json"
 
-# Ensure required directories exist
-mkdir -p /var/autoSCA/json /var/autoSCA/csv /var/autoSCA/log
-
+# Initialize logging
+log "INFO" "Starting AutoSCA assessment"
+log "INFO" "Creating required directories"
+mkdir -p /var/autoSCA/{json,csv,log} || log "ERROR" "Failed to create directories"
 
 # Check jq installed
 if ! command -v jq &>/dev/null; then
-  echo -e "${RED}Please install jq (sudo apt install jq)${ENDCOLOR}"
+  log "ERROR" "jq not installed. Please install with: sudo apt install jq"
   exit 1
 fi
 
+log "INFO" "Reading machines from $JSON_FILE"
 
 # Loop through each machine in the JSON file
 jq -c '.[]' "$JSON_FILE" | while read -r machine; do
@@ -27,10 +50,12 @@ jq -c '.[]' "$JSON_FILE" | while read -r machine; do
     host=$(echo $machine | jq -r '.host')
     username=$(echo $machine | jq -r '.username')
     password=$(echo $machine | jq -r '.password')
-    os_type=$(echo $machine | jq -r '.os')
+#    os_type=$(echo $machine | jq -r '.os')
     control_directory=$(echo $machine | jq -r '.control_directory')
+    echo ""
+    log "INFO" "Processing machine: $host"
 
-        # Ping check
+    # Ping check
     if ping -c 1 -W 2 "$host" &>/dev/null; then
       ping_status="PING_OK"
     else
@@ -56,7 +81,7 @@ jq -c '.[]' "$JSON_FILE" | while read -r machine; do
 
     # Skip only if both SSH and WinRM fail
     if [[ "$connection_status" == "CONN_FAIL" ]]; then
-      echo -e "${RED}$host | $ping_status | $connection_status | Connection failed on both SSH and WinRM. Skipping.${ENDCOLOR}"
+      log "ERROR" "$host | $ping_status | $connection_status | Connection failed on both SSH and WinRM. Skipping."
       continue
     fi
 
@@ -119,4 +144,6 @@ jq -c '.[]' "$JSON_FILE" | while read -r machine; do
     fi
 
 done
+echo ""
+log "INFO" "Assessment completed"
 
